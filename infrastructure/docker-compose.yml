@@ -1,0 +1,163 @@
+version: '3.8'
+
+services:
+  # Message Broker
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin123
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ecommerce-network
+
+  # MongoDB for Order Service
+  mongodb-orders:
+    image: mongo:7.0
+    container_name: mongodb-orders
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: orders
+    volumes:
+      - orders-data:/data/db
+    networks:
+      - ecommerce-network
+
+  # MongoDB for Inventory Service
+  mongodb-inventory:
+    image: mongo:7.0
+    container_name: mongodb-inventory
+    ports:
+      - "27018:27017"
+    environment:
+      MONGO_INITDB_DATABASE: inventory
+    volumes:
+      - inventory-data:/data/db
+    networks:
+      - ecommerce-network
+
+  # PostgreSQL for Payment Service
+  postgres:
+    image: postgres:16
+    container_name: postgres-payments
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: payments
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ecommerce-network
+
+  # Order Service
+  order-service:
+    build:
+      context: ./services/order-service
+      dockerfile: Dockerfile
+    container_name: order-service
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      MONGO_URL: mongodb://mongodb-orders:27017/orders
+      RABBITMQ_URL: amqp://admin:admin123@rabbitmq:5672
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mongodb-orders:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - ecommerce-network
+
+  # Payment Service
+  payment-service:
+    build:
+      context: ./services/payment-service
+      dockerfile: Dockerfile
+    container_name: payment-service
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: 3002
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_DATABASE: payments
+      PG_USER: postgres
+      PG_PASSWORD: postgres123
+      RABBITMQ_URL: amqp://admin:admin123@rabbitmq:5672
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - ecommerce-network
+
+  # Inventory Service
+  inventory-service:
+    build:
+      context: ./services/inventory-service
+      dockerfile: Dockerfile
+    container_name: inventory-service
+    ports:
+      - "3003:3003"
+    environment:
+      PORT: 3003
+      MONGO_URL: mongodb://mongodb-inventory:27017/inventory
+      RABBITMQ_URL: amqp://admin:admin123@rabbitmq:5672
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mongodb-inventory:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - ecommerce-network
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: 8080
+      ORDER_SERVICE_URL: http://order-service:3001
+      PAYMENT_SERVICE_URL: http://payment-service:3002
+      INVENTORY_SERVICE_URL: http://inventory-service:3003
+    depends_on:
+      - order-service
+      - payment-service
+      - inventory-service
+    restart: unless-stopped
+    networks:
+      - ecommerce-network
+
+networks:
+  ecommerce-network:
+    driver: bridge
+
+volumes:
+  orders-data:
+  inventory-data:
+  postgres-data:
